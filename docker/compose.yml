@@ -1,0 +1,428 @@
+# =============================================================================
+# Day 11 - Docker 환경 구성 (모범 답안)
+# =============================================================================
+# 이 compose.yml 파일은 Kafka + Spark + Python 통합 환경을 구성합니다.
+#
+# 실행 방법:
+#   cd docker
+#   docker compose up -d
+#
+# 서비스 접속:
+#   - Kafka UI: http://localhost:8080
+#   - Spark Master UI: http://localhost:8081
+#   - Spark Worker UI: http://localhost:8082
+#   - Spark App UI: http://localhost:4040 (앱 실행 중에만)
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Kafka (KRaft mode - Zookeeper 없이 단일 브로커)
+  # ===========================================================================
+  # KRaft(Kafka Raft)는 Kafka 3.0부터 도입된 새로운 메타데이터 관리 방식입니다.
+  # 기존에는 Zookeeper가 클러스터 메타데이터를 관리했지만,
+  # KRaft 모드에서는 Kafka 자체적으로 Raft 합의 알고리즘을 사용하여 관리합니다.
+  #
+  # 장점:
+  # - 아키텍처 단순화 (Zookeeper 불필요)
+  # - 운영 복잡도 감소
+  # - 메타데이터 처리 성능 향상
+  # ===========================================================================
+  kafka:
+    image: apache/kafka:4.1.1
+    # 이미지 설명:
+    #   Apache Kafka 공식 Docker 이미지
+    #   4.1.1은 2025년 11월 릴리스된 최신 안정 버전
+
+    container_name: kafka
+    # 컨테이너 이름:
+    #   docker ps에서 표시되는 이름
+    #   docker exec kafka <명령어>로 접속할 때 사용
+
+    hostname: kafka
+    # 호스트명:
+    #   Docker 네트워크 내에서 이 컨테이너를 식별하는 이름
+    #   다른 컨테이너에서 'kafka:9092'로 접근 가능
+
+    ports:
+      - "9092:9092"
+      # 클라이언트 포트 매핑 (호스트:컨테이너):
+      #   Producer, Consumer가 연결하는 포트
+      #   호스트의 9092 포트로 접근하면 컨테이너의 9092로 연결
+
+      - "9093:9093"
+      # 컨트롤러 포트:
+      #   KRaft 모드에서 컨트롤러 간 통신용
+      #   클러스터 메타데이터 동기화에 사용
+
+    environment:
+      # -------------------------------------------------------------------------
+      # KRaft 모드 필수 설정
+      # -------------------------------------------------------------------------
+      KAFKA_NODE_ID: 1
+      # 노드 ID:
+      #   이 브로커의 고유 식별자
+      #   다중 브로커 클러스터에서 각 브로커를 구분
+
+      KAFKA_PROCESS_ROLES: broker,controller
+      # 프로세스 역할:
+      #   - broker: 메시지 저장 및 전달 담당
+      #   - controller: 클러스터 메타데이터 관리 담당
+      #   단일 노드에서는 두 역할을 모두 수행
+
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # 컨트롤러 투표자:
+      #   형식: <노드ID>@<호스트>:<포트>
+      #   Raft 합의에 참여하는 컨트롤러 목록
+      #   다중 브로커: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # 컨트롤러 리스너 이름:
+      #   컨트롤러 간 통신에 사용할 리스너 지정
+
+      # -------------------------------------------------------------------------
+      # 리스너 설정 (중요!)
+      # -------------------------------------------------------------------------
+      # 리스너는 Kafka가 연결을 받아들이는 "문(門)"입니다.
+      # LISTENERS: 실제로 열어둘 문들
+      # ADVERTISED_LISTENERS: 클라이언트에게 알려줄 문 주소
+      # -------------------------------------------------------------------------
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      # 리스너 설정:
+      #   PLAINTEXT://0.0.0.0:9092 - 모든 인터페이스에서 9092 포트로 클라이언트 연결 수신
+      #   CONTROLLER://0.0.0.0:9093 - 모든 인터페이스에서 9093 포트로 컨트롤러 연결 수신
+      #   0.0.0.0은 모든 네트워크 인터페이스를 의미
+
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      # 광고 리스너:
+      #   클라이언트에게 "이 주소로 접속하세요"라고 알려주는 설정
+      #   Docker 네트워크 내에서는 'kafka'라는 호스트명으로 접근 가능
+      #   외부 접근이 필요하면 실제 IP나 도메인으로 변경
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      # 리스너 보안 프로토콜 매핑:
+      #   각 리스너 이름과 보안 프로토콜을 매핑
+      #   PLAINTEXT는 암호화 없음 (개발 환경용)
+      #   프로덕션에서는 SSL이나 SASL 사용 권장
+
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # 브로커 간 통신 리스너:
+      #   브로커끼리 통신할 때 사용할 리스너
+
+      # -------------------------------------------------------------------------
+      # 토픽 기본 설정
+      # -------------------------------------------------------------------------
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      # __consumer_offsets 토픽 복제 팩터:
+      #   Consumer 그룹의 오프셋을 저장하는 내부 토픽
+      #   단일 브로커에서는 1, 프로덕션에서는 3 권장
+
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      # 트랜잭션 로그 복제 팩터:
+      #   Exactly-once 처리를 위한 트랜잭션 로그
+      #   단일 브로커에서는 1
+
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # 트랜잭션 로그 최소 ISR:
+      #   ISR(In-Sync Replicas): 동기화된 복제본 수
+      #   단일 브로커에서는 1
+
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # 로그 디렉토리:
+      #   메시지가 저장되는 디렉토리
+      #   볼륨으로 마운트하여 데이터 영속성 확보
+
+      CLUSTER_ID: "day11-kafka-cluster-001"
+      # 클러스터 ID:
+      #   KRaft 모드에서 필수인 클러스터 식별자
+      #   모든 브로커가 동일한 ID를 가져야 함
+
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+      # 볼륨 마운트:
+      #   kafka-data라는 이름의 Docker 볼륨을 컨테이너 내부 경로에 연결
+      #   컨테이너가 삭제되어도 데이터 유지
+
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      # 헬스체크:
+      #   Kafka 브로커가 정상 동작하는지 확인
+      #   kafka-broker-api-versions.sh 명령이 성공하면 healthy
+
+      interval: 10s
+      # 체크 간격: 10초마다 확인
+
+      timeout: 10s
+      # 타임아웃: 10초 내에 응답 없으면 실패
+
+      retries: 5
+      # 재시도 횟수: 5번 연속 실패시 unhealthy
+
+      start_period: 30s
+      # 시작 대기: 컨테이너 시작 후 30초간은 실패해도 무시
+
+  # ===========================================================================
+  # Kafka UI - 토픽, 메시지, Consumer Lag 모니터링
+  # ===========================================================================
+  # Kafka UI는 Kafka 클러스터를 웹 브라우저로 모니터링할 수 있는 도구입니다.
+  # 토픽 목록, 메시지 내용, Consumer 지연(Lag) 등을 쉽게 확인할 수 있습니다.
+  # ===========================================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    # Kafka UI 이미지:
+    #   Provectus에서 개발한 오픈소스 Kafka 관리 UI
+    #   무료로 사용 가능하며 기능이 풍부함
+
+    container_name: kafka-ui
+    ports:
+      - "8080:8080"
+      # 웹 UI 포트:
+      #   http://localhost:8080으로 접속
+
+    environment:
+      KAFKA_CLUSTERS_0_NAME: day11-cluster
+      # 클러스터 이름:
+      #   UI에서 표시되는 클러스터 이름
+
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      # 브로커 주소:
+      #   Kafka 브로커에 연결하기 위한 주소
+      #   Docker 네트워크 내에서 'kafka' 호스트명 사용
+
+    depends_on:
+      kafka:
+        condition: service_healthy
+        # 의존성 설정:
+        #   kafka 서비스가 healthy 상태가 될 때까지 대기 후 시작
+        #   Kafka가 완전히 시작된 후에 UI 시작
+
+  # ===========================================================================
+  # Spark Master
+  # ===========================================================================
+  # Spark Master는 클러스터의 리소스를 관리하고 작업을 스케줄링합니다.
+  #
+  # 역할:
+  # - Worker 노드 등록 및 관리
+  # - 애플리케이션 요청 수신
+  # - 작업을 Worker에게 분배
+  # - 클러스터 상태 모니터링
+  # ===========================================================================
+  spark-master:
+    image: apache/spark:3.5.8
+    # Spark 이미지:
+    #   Apache Spark 공식 Docker 이미지
+    #   3.5.8은 2026년 1월 릴리스된 최신 안정 버전
+    #   Spark 4.x는 아직 프리뷰 단계
+
+    container_name: spark-master
+    hostname: spark-master
+    # 호스트명:
+    #   Worker가 Master에 연결할 때 사용
+    #   spark://spark-master:7077 형태로 참조
+
+    ports:
+      - "7077:7077"
+      # Master 포트:
+      #   Worker와 Driver가 Master에 연결하는 포트
+      #   Spark 애플리케이션 제출 시 사용
+
+      - "4040:4040"
+      # Spark Application UI:
+      #   실행 중인 Spark 애플리케이션의 상세 정보
+      #   Job, Stage, Task 진행 상황 확인
+
+      - "8081:8080"
+      # Master Web UI:
+      #   http://localhost:8081로 접속
+      #   클러스터 상태, Worker 목록, 실행 중인 앱 확인
+      #   (호스트 8080은 Kafka UI가 사용하므로 8081로 매핑)
+
+    environment:
+      SPARK_MODE: master
+      # Spark 모드:
+      #   이 컨테이너가 Master 역할을 수행함을 지정
+
+      SPARK_MASTER_HOST: spark-master
+      # Master 호스트:
+      #   Worker가 연결할 Master의 호스트명
+
+      SPARK_MASTER_PORT: 7077
+      # Master 포트:
+      #   기본값은 7077
+
+      SPARK_MASTER_WEBUI_PORT: 8080
+      # Web UI 포트:
+      #   컨테이너 내부에서 사용하는 UI 포트
+
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    # 실행 명령:
+    #   Spark Master 프로세스 시작
+    #   spark-class는 적절한 JVM 설정으로 클래스를 실행하는 스크립트
+
+    volumes:
+      - ../data:/data
+      # 데이터 디렉토리:
+      #   입력/출력 데이터를 저장하는 공유 디렉토리
+
+      - ../src:/app
+      # 소스 디렉토리:
+      #   Python 스크립트 등 애플리케이션 코드
+
+      - spark-logs:/opt/spark/logs
+      # 로그 디렉토리:
+      #   Spark 실행 로그 저장
+
+  # ===========================================================================
+  # Spark Worker
+  # ===========================================================================
+  # Spark Worker는 실제 데이터 처리를 수행하는 노드입니다.
+  #
+  # 역할:
+  # - Master로부터 작업(Task) 수신
+  # - Executor 프로세스 실행
+  # - 데이터 처리 및 셔플링
+  # - 결과를 Driver에게 반환
+  #
+  # 아키텍처:
+  # ┌─────────────────┐
+  # │   Spark Driver  │  ← 애플리케이션 로직 (우리 코드)
+  # └────────┬────────┘
+  #          │
+  # ┌────────┴────────┐
+  # │   Spark Master  │  ← 리소스 관리, 작업 스케줄링
+  # └────────┬────────┘
+  #          │
+  # ┌────────┴────────┐
+  # │  Spark Worker   │  ← 실제 처리 수행
+  # │   (Executor)    │
+  # └─────────────────┘
+  # ===========================================================================
+  spark-worker:
+    image: apache/spark:3.5.8
+    container_name: spark-worker
+    hostname: spark-worker
+
+    ports:
+      - "8082:8081"
+      # Worker Web UI:
+      #   http://localhost:8082로 접속
+      #   이 Worker의 상태와 실행 중인 Executor 확인
+
+    environment:
+      SPARK_MODE: worker
+      # Spark 모드:
+      #   이 컨테이너가 Worker 역할을 수행함을 지정
+
+      SPARK_MASTER_URL: spark://spark-master:7077
+      # Master URL:
+      #   Worker가 연결할 Master의 주소
+      #   형식: spark://<hostname>:<port>
+
+      SPARK_WORKER_CORES: 2
+      # Worker 코어 수:
+      #   이 Worker가 제공할 CPU 코어 수
+      #   동시에 실행 가능한 Task 수에 영향
+
+      SPARK_WORKER_MEMORY: 2g
+      # Worker 메모리:
+      #   이 Worker가 제공할 메모리 양
+      #   Executor에게 할당되는 메모리
+
+      SPARK_WORKER_WEBUI_PORT: 8081
+      # Worker UI 포트:
+      #   컨테이너 내부에서 사용하는 UI 포트
+
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    # 실행 명령:
+    #   Spark Worker 프로세스 시작
+    #   Master URL을 인자로 전달하여 연결
+
+    depends_on:
+      - spark-master
+      # 의존성:
+      #   Master가 먼저 시작된 후 Worker 시작
+
+    volumes:
+      - ../data:/data
+      - ../src:/app
+      - spark-logs:/opt/spark/logs
+
+  # ===========================================================================
+  # Python 개발 환경 (uv + confluent-kafka + pyspark)
+  # ===========================================================================
+  # Producer, Consumer, Spark 코드를 실행하는 Python 환경입니다.
+  # Kafka와 Spark 클러스터에 연결하여 데이터 처리를 수행합니다.
+  # ===========================================================================
+  python:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+      # 빌드 설정:
+      #   현재 디렉토리의 Dockerfile.python을 사용하여 이미지 빌드
+      #   confluent-kafka, pyspark 등이 설치된 환경
+
+    container_name: python-dev
+    hostname: python-dev
+
+    stdin_open: true
+    # 표준 입력 유지:
+    #   대화형 세션을 위해 stdin 열어둠
+
+    tty: true
+    # TTY 할당:
+    #   터미널 세션을 위한 가상 터미널 할당
+
+    volumes:
+      - ../data:/data
+      # 데이터 디렉토리:
+      #   CSV 파일 등 입출력 데이터
+
+      - ../src:/app
+      # 소스 디렉토리:
+      #   Python 스크립트가 있는 디렉토리
+
+    working_dir: /app
+    # 작업 디렉토리:
+    #   컨테이너 시작 시 /app 디렉토리에서 시작
+
+    depends_on:
+      kafka:
+        condition: service_healthy
+        # Kafka 의존성:
+        #   Kafka가 healthy 상태가 될 때까지 대기
+      spark-master:
+        condition: service_started
+        # Spark 의존성:
+        #   Spark Master가 시작된 후 시작
+
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # Kafka 브로커 주소:
+      #   Producer/Consumer가 연결할 Kafka 주소
+      #   환경변수로 제공하여 코드에서 참조 가능
+
+      SPARK_MASTER_URL: spark://spark-master:7077
+      # Spark Master URL:
+      #   SparkSession 생성 시 사용할 Master 주소
+
+    command: sleep infinity
+    # 실행 명령:
+    #   컨테이너가 종료되지 않고 계속 실행되도록 대기
+    #   docker exec로 접속하여 코드 실행
+
+# =============================================================================
+# 볼륨 정의
+# =============================================================================
+# Docker 볼륨은 컨테이너와 독립적으로 데이터를 저장합니다.
+# 컨테이너를 삭제해도 볼륨의 데이터는 유지됩니다.
+# docker compose down -v 명령으로 볼륨까지 삭제할 수 있습니다.
+# =============================================================================
+volumes:
+  kafka-data:
+    # Kafka 데이터:
+    #   토픽의 메시지가 저장되는 볼륨
+    #   컨테이너 재시작 후에도 메시지 유지
+
+  spark-logs:
+    # Spark 로그:
+    #   Spark 실행 로그가 저장되는 볼륨
+    #   디버깅 시 유용

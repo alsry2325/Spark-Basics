@@ -1,0 +1,84 @@
+# =============================================================================
+# Day 11 - Python 개발 환경 (uv + confluent-kafka + pyspark)
+# =============================================================================
+# 이 Dockerfile은 Kafka Producer/Consumer와 PySpark를 실행할 수 있는
+# Python 환경을 구성합니다.
+#
+# 포함 패키지:
+# - confluent-kafka: Kafka Producer/Consumer
+# - pyspark: Spark Python API
+# - pandas: 데이터 분석
+# - pyarrow: Parquet 파일 처리
+# - jupyter: 노트북 실행 (선택)
+# =============================================================================
+FROM python:3.12-slim
+# Python 3.12 슬림 이미지 (최신 안정 버전)
+
+# -----------------------------------------------------------------------------
+# 시스템 패키지 설치
+# -----------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y \
+    curl \
+    gcc \
+    librdkafka-dev \
+    default-jdk-headless \
+    && rm -rf /var/lib/apt/lists/*
+    # curl: 파일 다운로드 등에 사용
+    # gcc: C 확장 컴파일에 필요 (confluent-kafka 등)
+    # librdkafka: confluent-kafka가 의존하는 C 라이브러리 (Kafka 프로토콜 구현체)
+    # default-jdk-headless: PySpark 실행에 필요한 Java 런타임 (headless: GUI 없는 서버용)
+    # 캐시 정리: 이미지 크기 최소화
+
+# -----------------------------------------------------------------------------
+# uv 설치 (빠른 Python 패키지 관리자)
+# -----------------------------------------------------------------------------
+RUN pip install uv
+# uv는 pip보다 10~100배 빠른 패키지 설치 제공
+
+# -----------------------------------------------------------------------------
+# 작업 디렉토리 설정
+# -----------------------------------------------------------------------------
+WORKDIR /app
+
+# -----------------------------------------------------------------------------
+# Python 패키지 설치
+# -----------------------------------------------------------------------------
+# Python 패키지:
+#   - confluent-kafka: Kafka Producer/Consumer, AdminClient (librdkafka 기반 고성능)
+#   - pyspark: Spark Python API (3.5.8 - compose.yml의 Spark 이미지 버전과 일치)
+#   - pandas: 데이터 분석 라이브러리 (Spark DataFrame과 변환 가능)
+#   - pyarrow: Parquet 파일 읽기/쓰기 (Spark의 Arrow 최적화)
+#   - jupyter: 노트북 환경 (선택적 사용)
+RUN uv pip install --system \
+    confluent-kafka \
+    pyspark==3.5.8 \
+    pandas \
+    pyarrow \
+    jupyter
+
+# -----------------------------------------------------------------------------
+# Java 환경 변수 설정 (PySpark용)
+# -----------------------------------------------------------------------------
+ENV JAVA_HOME=/usr/lib/jvm/default-java
+# JAVA_HOME:
+#   Java 설치 경로 (default-java 심볼릭 링크 사용)
+#   PySpark가 JVM을 찾을 때 사용
+
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+# PATH에 Java 바이너리 추가
+
+# -----------------------------------------------------------------------------
+# PySpark 환경 변수
+# -----------------------------------------------------------------------------
+ENV PYSPARK_PYTHON=python3
+# PySpark가 사용할 Python 인터프리터 (Worker에서 실행)
+
+ENV PYSPARK_DRIVER_PYTHON=python3
+# Driver에서 사용할 Python 인터프리터
+
+# -----------------------------------------------------------------------------
+# 기본 명령
+# -----------------------------------------------------------------------------
+CMD ["sleep", "infinity"]
+# 컨테이너가 종료되지 않고 계속 실행
+# docker exec로 접속하여 코드 실행

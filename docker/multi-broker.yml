@@ -1,0 +1,326 @@
+# =============================================================================
+# Day 11 - 보너스: 3대 브로커 Kafka 클러스터 (KRaft mode)
+# =============================================================================
+# 이 파일은 고가용성을 위한 3대 브로커 Kafka 클러스터를 구성합니다.
+#
+# 특징:
+# - 3대 브로커가 모두 Controller + Broker 역할 수행
+# - 복제 팩터 3으로 데이터 안정성 보장
+# - 1대 브로커가 죽어도 서비스 유지 (Min ISR: 2)
+#
+# 사용법:
+#   cd docker
+#   docker compose -f multi-broker.yml up -d
+#
+# 서비스 접속:
+#   - Kafka UI: http://localhost:8080
+#   - Spark Master UI: http://localhost:8081
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Kafka Broker 1 (Controller + Broker)
+  # ===========================================================================
+  # 3대 브로커 중 첫 번째 노드입니다.
+  # KRaft 모드에서 Controller 역할도 함께 수행합니다.
+  # ===========================================================================
+  kafka-1:
+    image: apache/kafka:4.1.1
+    # Kafka 4.1.1 (2025년 11월 릴리스)
+
+    container_name: kafka-1
+    hostname: kafka-1
+    # 호스트명: 다른 브로커와 클라이언트가 접근할 때 사용
+
+    ports:
+      - "9092:9092"
+      # 클라이언트 포트:
+      #   호스트의 9092로 접근 시 kafka-1에 연결
+
+    environment:
+      # -------------------------------------------------------------------------
+      # KRaft 클러스터 설정
+      # -------------------------------------------------------------------------
+      KAFKA_NODE_ID: 1
+      # 노드 ID: 클러스터 내에서 이 브로커를 식별하는 고유 번호
+
+      KAFKA_PROCESS_ROLES: broker,controller
+      # 역할: 이 노드가 Broker와 Controller 역할 모두 수행
+
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+      # 컨트롤러 투표자:
+      #   Raft 합의에 참여하는 모든 컨트롤러 목록
+      #   형식: <노드ID>@<호스트>:<컨트롤러포트>
+      #   3대 모두 나열해야 함
+
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # 컨트롤러 리스너 이름
+
+      # -------------------------------------------------------------------------
+      # 리스너 설정
+      # -------------------------------------------------------------------------
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      # 이 브로커가 열어둘 포트들
+
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092
+      # 클라이언트에게 알려줄 주소 (kafka-1)
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # -------------------------------------------------------------------------
+      # 복제 및 안정성 설정 (고가용성)
+      # -------------------------------------------------------------------------
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      # __consumer_offsets 토픽 복제:
+      #   Consumer 오프셋을 3대 브로커에 복제
+
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      # 트랜잭션 로그 복제
+
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      # 최소 동기화 복제본:
+      #   최소 2대가 동기화되어야 쓰기 허용
+
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      # 기본 복제 팩터:
+      #   새로 생성되는 토픽의 기본 복제 수
+
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      # 최소 ISR:
+      #   Producer가 acks=all일 때 최소 2대가 확인해야 성공
+
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: "day11-multi-broker-cluster"
+      # 클러스터 ID: 모든 브로커가 동일한 ID 사용
+
+    volumes:
+      - kafka-1-data:/var/lib/kafka/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ===========================================================================
+  # Kafka Broker 2 (Controller + Broker)
+  # ===========================================================================
+  kafka-2:
+    image: apache/kafka:4.1.1
+    container_name: kafka-2
+    hostname: kafka-2
+
+    ports:
+      - "9094:9092"
+      # 호스트 9094 → 컨테이너 9092
+      # 각 브로커마다 다른 호스트 포트 사용
+
+    environment:
+      KAFKA_NODE_ID: 2
+      # 노드 ID: 2번 브로커
+
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9092
+      # 이 브로커의 광고 주소는 kafka-2
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: "day11-multi-broker-cluster"
+
+    volumes:
+      - kafka-2-data:/var/lib/kafka/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ===========================================================================
+  # Kafka Broker 3 (Controller + Broker)
+  # ===========================================================================
+  kafka-3:
+    image: apache/kafka:4.1.1
+    container_name: kafka-3
+    hostname: kafka-3
+
+    ports:
+      - "9095:9092"
+      # 호스트 9095 → 컨테이너 9092
+
+    environment:
+      KAFKA_NODE_ID: 3
+      # 노드 ID: 3번 브로커
+
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: "day11-multi-broker-cluster"
+
+    volumes:
+      - kafka-3-data:/var/lib/kafka/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ===========================================================================
+  # Kafka UI - 3대 브로커 클러스터 모니터링
+  # ===========================================================================
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+
+    ports:
+      - "8080:8080"
+
+    environment:
+      KAFKA_CLUSTERS_0_NAME: multi-broker-cluster
+      # 클러스터 이름
+
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      # 부트스트랩 서버:
+      #   3대 브로커 모두 나열 (고가용성)
+      #   1대가 죽어도 나머지로 연결 가능
+
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
+      # 3대 브로커가 모두 healthy가 될 때까지 대기
+
+  # ===========================================================================
+  # Spark Master
+  # ===========================================================================
+  spark-master:
+    image: apache/spark:3.5.8
+    container_name: spark-master
+    hostname: spark-master
+
+    ports:
+      - "7077:7077"
+      - "4040:4040"
+      - "8081:8080"
+
+    environment:
+      SPARK_MODE: master
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8080
+
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+
+    volumes:
+      - ../data:/data
+      - ../src:/app
+      - spark-logs:/opt/spark/logs
+
+  # ===========================================================================
+  # Spark Worker
+  # ===========================================================================
+  spark-worker:
+    image: apache/spark:3.5.8
+    container_name: spark-worker
+    hostname: spark-worker
+
+    ports:
+      - "8082:8081"
+
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_MEMORY: 2g
+      SPARK_WORKER_WEBUI_PORT: 8081
+
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+
+    depends_on:
+      - spark-master
+
+    volumes:
+      - ../data:/data
+      - ../src:/app
+      - spark-logs:/opt/spark/logs
+
+  # ===========================================================================
+  # Python 개발 환경
+  # ===========================================================================
+  python:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+
+    container_name: python-dev
+    hostname: python-dev
+    stdin_open: true
+    tty: true
+
+    volumes:
+      - ../data:/data
+      - ../src:/app
+
+    working_dir: /app
+
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      - spark-master
+
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      # 3대 브로커 모두 나열하여 고가용성 확보
+
+      SPARK_MASTER_URL: spark://spark-master:7077
+
+    command: sleep infinity
+
+# =============================================================================
+# 볼륨 정의
+# =============================================================================
+# 각 브로커마다 별도의 볼륨을 사용하여 데이터 격리
+# =============================================================================
+volumes:
+  kafka-1-data:
+    # Broker 1의 데이터
+
+  kafka-2-data:
+    # Broker 2의 데이터
+
+  kafka-3-data:
+    # Broker 3의 데이터
+
+  spark-logs:
+    # Spark 로그

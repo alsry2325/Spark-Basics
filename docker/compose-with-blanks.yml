@@ -1,0 +1,222 @@
+# =============================================================================
+# Day 11 - Docker 환경 구성 (빈칸 채우기 버전)
+# =============================================================================
+# 이 파일의 _____ 부분을 채워서 완성된 compose.yml을 만들어보세요.
+# 완성 후 docker/compose.yml과 비교해보세요.
+#
+# 실행 방법:
+#   cd docker
+#   docker compose -f compose-with-blanks.yml up -d
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Kafka (KRaft mode - Zookeeper 없이 단일 브로커)
+  # ===========================================================================
+  # KRaft(Kafka Raft)는 Kafka 3.0부터 도입된 새로운 메타데이터 관리 방식입니다.
+  # 기존에는 Zookeeper가 클러스터 메타데이터를 관리했지만,
+  # KRaft 모드에서는 Kafka 자체적으로 Raft 합의 알고리즘을 사용하여 관리합니다.
+  # ===========================================================================
+  kafka:
+    image: apache/kafka:4.1.1
+    # Kafka 4.1.1은 2025년 11월 릴리스된 최신 안정 버전입니다.
+
+    container_name: kafka
+    # 컨테이너 이름: docker exec kafka <명령어>로 접속할 때 사용
+
+    hostname: kafka
+    # 호스트명: 다른 컨테이너에서 'kafka:9092'로 접근 가능
+
+    ports:
+      - "9092:9092"  # 클라이언트(Producer/Consumer) 연결 포트
+      - "9093:9093"  # 컨트롤러 통신 포트 (KRaft 내부 통신)
+
+    environment:
+      # -------------------------------------------------------------------------
+      # KRaft 모드 설정
+      # -------------------------------------------------------------------------
+      KAFKA_NODE_ID: 1
+      # 이 브로커의 고유 ID (다중 브로커 클러스터에서 각 브로커를 구분)
+
+      KAFKA_PROCESS_ROLES: broker,controller
+      # 이 노드의 역할
+      # - broker: 메시지 저장/전달
+      # - controller: 클러스터 메타데이터 관리
+
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # Raft 합의에 참여하는 컨트롤러 목록
+
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # 컨트롤러 간 통신에 사용할 리스너
+
+      # -------------------------------------------------------------------------
+      # 리스너 설정 (TODO 1, 2)
+      # -------------------------------------------------------------------------
+      # 리스너는 Kafka가 연결을 받아들이는 "문(門)"입니다.
+      # - LISTENERS: 실제로 열어둘 문들
+      # - ADVERTISED_LISTENERS: 클라이언트에게 알려줄 문 주소
+
+      # TODO 1: PLAINTEXT 리스너와 CONTROLLER 리스너를 설정하세요
+      # 힌트: PLAINTEXT는 9092 포트, CONTROLLER는 9093 포트
+      # 형식: PLAINTEXT://0.0.0.0:포트,CONTROLLER://0.0.0.0:포트
+      KAFKA_LISTENERS: _____
+
+      # TODO 2: 외부에서 접근할 수 있는 advertised listener를 설정하세요
+      # 힌트: Docker 네트워크 내에서 컨테이너 이름(kafka)과 포트(9092)를 사용
+      # 형식: PLAINTEXT://호스트명:포트
+      KAFKA_ADVERTISED_LISTENERS: _____
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # -------------------------------------------------------------------------
+      # 토픽 기본 설정
+      # -------------------------------------------------------------------------
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: "day11-kafka-cluster-001"
+
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ===========================================================================
+  # Spark Master
+  # ===========================================================================
+  # Spark Master는 클러스터의 리소스를 관리하고 작업을 스케줄링합니다.
+  # Worker들이 Master에 등록하고, Driver가 Master에 작업을 제출합니다.
+  # ===========================================================================
+  spark-master:
+    image: apache/spark:3.5.8
+    # Spark 3.5.8은 2026년 1월 릴리스된 최신 안정 버전입니다.
+
+    container_name: spark-master
+    hostname: spark-master
+
+    ports:
+      - "7077:7077"   # Spark Master 포트 (Worker, Driver가 연결)
+      - "4040:4040"   # Spark Application UI (실행 중인 앱 상세 정보)
+      - "8081:8080"   # Master Web UI (클러스터 상태 확인)
+
+    environment:
+      SPARK_MODE: master
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8080
+
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+
+    volumes:
+      - ../data:/data
+      - ../src:/app
+      - spark-logs:/opt/spark/logs
+
+  # ===========================================================================
+  # Spark Worker
+  # ===========================================================================
+  # Spark Worker는 실제 데이터 처리를 수행하는 노드입니다.
+  # Master에게 자원(코어, 메모리)을 등록하고 Task를 실행합니다.
+  #
+  # 아키텍처:
+  # ┌─────────────────┐
+  # │   Spark Driver  │  ← 우리 코드 (SparkSession)
+  # └────────┬────────┘
+  #          │ 작업 제출
+  # ┌────────┴────────┐
+  # │   Spark Master  │  ← 리소스 관리
+  # └────────┬────────┘
+  #          │ Task 분배
+  # ┌────────┴────────┐
+  # │  Spark Worker   │  ← 실제 처리
+  # └─────────────────┘
+  # ===========================================================================
+  spark-worker:
+    image: apache/spark:3.5.8
+    container_name: spark-worker
+    hostname: spark-worker
+
+    ports:
+      - "8082:8081"  # Worker Web UI
+
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_CORES: 2     # Worker가 제공할 CPU 코어 수
+      SPARK_WORKER_MEMORY: 2g   # Worker가 제공할 메모리 양
+      SPARK_WORKER_WEBUI_PORT: 8081
+
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+
+    depends_on:
+      - spark-master
+
+    volumes:
+      - ../data:/data
+      - ../src:/app
+      - spark-logs:/opt/spark/logs
+
+  # ===========================================================================
+  # Python 개발 환경 (uv + confluent-kafka + pyspark)
+  # ===========================================================================
+  # Producer, Consumer, Spark 코드를 실행하는 Python 환경입니다.
+  # ===========================================================================
+  python:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+
+    container_name: python-dev
+    hostname: python-dev
+    stdin_open: true
+    tty: true
+
+    volumes:
+      - ../data:/data
+      - ../src:/app
+
+    working_dir: /app
+
+    depends_on:
+      kafka:
+        condition: service_healthy
+      spark-master:
+        condition: service_started
+
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SPARK_MASTER_URL: spark://spark-master:7077
+
+    command: sleep infinity
+
+volumes:
+  kafka-data:
+  spark-logs:
+
+
+# =============================================================================
+# 정답 확인
+# =============================================================================
+# 모든 빈칸을 채운 후, compose.yml 파일과 비교해보세요.
+#
+# <details>
+# <summary>정답 보기</summary>
+#
+# TODO 1: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+#   - PLAINTEXT: 클라이언트(Producer/Consumer)가 연결하는 리스너
+#   - CONTROLLER: KRaft 컨트롤러 간 통신 리스너
+#   - 0.0.0.0: 모든 네트워크 인터페이스에서 연결 수신
+#
+# TODO 2: PLAINTEXT://kafka:9092
+#   - 클라이언트에게 "kafka:9092로 접속하세요"라고 알려주는 주소
+#   - Docker 네트워크 내에서 'kafka'라는 호스트명으로 접근 가능
+#
+# </details>
+# =============================================================================
