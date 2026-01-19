@@ -70,7 +70,7 @@ def main():
 
             producer.produce(
                 topic=args.topic,
-                key=event["user_id"].encode("utf-8"),
+                key=event["user_idd"].encode("utf-8"),
                 value=json.dumps(event).encode("utf-8"),
                 callback=delivery_callback,
             )

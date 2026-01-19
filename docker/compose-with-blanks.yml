@@ -59,12 +59,12 @@ services:
       # TODO 1: PLAINTEXT 리스너와 CONTROLLER 리스너를 설정하세요
       # 힌트: PLAINTEXT는 9092 포트, CONTROLLER는 9093 포트
       # 형식: PLAINTEXT://0.0.0.0:포트,CONTROLLER://0.0.0.0:포트
-      KAFKA_LISTENERS: _____
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
 
       # TODO 2: 외부에서 접근할 수 있는 advertised listener를 설정하세요
       # 힌트: Docker 네트워크 내에서 컨테이너 이름(kafka)과 포트(9092)를 사용
       # 형식: PLAINTEXT://호스트명:포트
-      KAFKA_ADVERTISED_LISTENERS: _____
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
 
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT

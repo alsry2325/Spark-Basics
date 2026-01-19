@@ -298,9 +298,9 @@ services:
   # ===========================================================================
   spark-worker:
     image: apache/spark:3.5.8
+    # 분산처리할때 스케일을 3개 정도만 실행하려고하는데 이름이 겹치기때문에 주석처리
     container_name: spark-worker
     hostname: spark-worker
-
     ports:
       - "8082:8081"
       # Worker Web UI:
