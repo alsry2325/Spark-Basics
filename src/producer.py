@@ -1,101 +1,92 @@
-#!/usr/bin/env python3
 """
-API 이벤트 Producer
+Kafka Producer - API 이벤트 생성기
 
-Usage:
-    python producer.py [--count N] [--delay D]
-
-Options:
-    --count N   전송할 메시지 수 (기본: 1000)
-    --delay D   메시지 간 지연 시간(초) (기본: 0.01)
+실행 방법:
+    docker exec -it python-dev python producer.py --rate 10
 """
-import argparse
 import json
-import random
 import time
+import random
+import uuid
+import argparse
 from datetime import datetime
+from confluent_kafka.admin import AdminClient, NewTopic
 from confluent_kafka import Producer
 
+KAFKA_BOOTSTRAP_SERVERS = "kafka:9092"
+TOPIC_NAME = "api-events"
+NUM_PARTITIONS = 4
 
-# API 이벤트 설정
-ENDPOINTS = ["/api/products", "/api/users", "/api/orders", "/api/payments", "/api/search"]
+ENDPOINTS = ["/api/users", "/api/orders", "/api/products", "/api/payments", "/api/search"]
 METHODS = ["GET", "POST", "PUT", "DELETE"]
-STATUS_CODES = [200, 200, 200, 200, 201, 400, 404, 500]
+STATUS_CODES = [
+    (200, 60), (201, 10), (400, 8), (401, 5),
+    (404, 7), (500, 6), (502, 2), (503, 2),
+]
 
 
-def generate_api_event():
-    """API 이벤트 데이터 생성"""
+def weighted_choice(choices):
+    total = sum(weight for _, weight in choices)
+    r = random.uniform(0, total)
+    cumulative = 0
+    for item, weight in choices:
+        cumulative += weight
+        if r <= cumulative:
+            return item
+    return choices[-1][0]
+
+def generate_event():
+    status_code = weighted_choice(STATUS_CODES)
+    if status_code >= 500:
+        response_time = random.randint(500, 2000)
+    elif status_code >= 400:
+        response_time = random.randint(100, 500)
+    else:
+        response_time = random.randint(10, 300)
     return {
-        "request_id": f"REQ_{random.randint(1, 999999):06d}",
-        "user_id": f"U{random.randint(1, 1000):04d}",
+        "request_id": str(uuid.uuid4())[:8],
+        "user_id": f"user-{random.randint(1, 100):03d}",
         "endpoint": random.choice(ENDPOINTS),
         "method": random.choice(METHODS),
-        "status_code": random.choice(STATUS_CODES),
-        "response_time_ms": random.randint(10, 500),
-        "timestamp": datetime.now().isoformat(),
+        "status_code": status_code,
+        "response_time_ms": response_time,
+        "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
     }
-
-
-def delivery_callback(err, msg):
-    """전송 결과 콜백"""
-    if err:
-        print(f"전송 실패: {err}")
-
 
 def main():
-    parser = argparse.ArgumentParser(description="API 이벤트 Producer")
-    parser.add_argument("--count", type=int, default=1000, help="전송할 메시지 수")
-    parser.add_argument("--delay", type=float, default=0.01, help="메시지 간 지연 시간(초)")
-    parser.add_argument("--topic", type=str, default="api-events", help="토픽 이름")
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--rate", type=int, default=10)
+    parser.add_argument("--duration", type=int, default=0)
     args = parser.parse_args()
 
-    # Producer 설정
-    config = {
-        "bootstrap.servers": "kafka:9092",
-        "client.id": "api-event-producer",
-    }
-    producer = Producer(config)
+    admin = AdminClient({
+        "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS
+    })
 
-    print(f"API 이벤트 {args.count}건 전송 시작...")
-    print(f"  토픽: {args.topic}")
-    print(f"  지연: {args.delay}초")
-    print()
-
+    producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS})
+    interval = 1.0 / args.rate
+    total_sent = 0
     start_time = time.time()
-    sent_count = 0
 
+    topic = NewTopic(topic=TOPIC_NAME, num_partitions=NUM_PARTITIONS, replication_factor=1)
+    admin.create_topics([topic])[TOPIC_NAME].result()
     try:
-        for i in range(args.count):
-            event = generate_api_event()
-
-            producer.produce(
-                topic=args.topic,
-                key=event["user_idd"].encode("utf-8"),
-                value=json.dumps(event).encode("utf-8"),
-                callback=delivery_callback,
-            )
-
-            sent_count += 1
-
-            if (i + 1) % 100 == 0:
-                producer.poll(0)
-                print(f"  {i + 1}건 전송 완료")
-
-            if args.delay > 0:
-                time.sleep(args.delay)
-
+        while True:
+            if args.duration > 0 and (time.time() - start_time) >= args.duration:
+                break
+            event = generate_event()
+            producer.produce(TOPIC_NAME,key=event["endpoint"], value=json.dumps(event))
+            total_sent += 1
+            if total_sent % 10 == 0:
+                print(f"전송: {total_sent}건")
+            producer.poll(0)
+            time.sleep(interval)
     except KeyboardInterrupt:
-        print("\n중단됨")
+        pass
     finally:
         producer.flush()
-
-    elapsed = time.time() - start_time
-    print()
-    print(f"전송 완료!")
-    print(f"  총 전송: {sent_count}건")
-    print(f"  소요 시간: {elapsed:.2f}초")
-    print(f"  처리량: {sent_count / elapsed:.0f} records/sec")
-
+        print(f"총 전송: {total_sent}건")
 
 if __name__ == "__main__":
     main()
